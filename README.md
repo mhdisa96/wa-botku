@@ -53,13 +53,18 @@ index.js      → main bot
 
 ---
 
+## jalankan di vps ##
+```bash
+bash <(curl -s https://raw.githubusercontent.com/mhdisa96/wa-botku/main/install.sh)
+```
+
 ⚙️ Instalasi VPS (Ubuntu)
 
 1. Clone Repository
-
+```bash
 git clone https://github.com/mhdisa96/wa-botku.git
 cd wa-botku
-
+```
 ---
 
 2. Install Dependency
