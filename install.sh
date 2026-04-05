@@ -21,7 +21,7 @@ fi
 
 # Clone repo
 echo "📥 Cloning repo..."
-git clone https://github.com/USERNAME/wa-botku.git wa-botku
+git clone https://github.com/mhdisa96/wa-botku.git wa-botku
 cd wa-botku
 
 # Install dependencies
