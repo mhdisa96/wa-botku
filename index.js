@@ -228,7 +228,7 @@ async function sendSlot(timeKey, trigger = "manual") {
 
     await sock.sendMessage(config.targetGroupJid, {
       image: { url: photo.path },
-      caption: i === 0 ? slot.text || "" : ""
+      caption: i === 0 ? (slot.text || "") : ""
     });
 
     sentPhoto++;
@@ -320,10 +320,13 @@ async function maybeRequestPairingCode() {
     if (sock?.authState?.creds?.registered) return;
 
     pairingRequested = true;
+
+    await sock.waitForConnectionUpdate((update) => !!update.qr);
+
     const code = await sock.requestPairingCode(PAIRING_NUMBER);
 
     console.log("\n=== KODE TAUTAN WHATSAPP ===");
-    console.log(code);
+    console.log(code?.match(/.{1,4}/g)?.join("-") || code);
     console.log(`Masukkan kode ini di WhatsApp untuk nomor ${PAIRING_NUMBER}\n`);
 
     writeLog("pairing_code_requested", {
@@ -603,8 +606,6 @@ async function connectBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  await maybeRequestPairingCode();
-
   sock.ev.on("connection.update", async (update) => {
     const { connection, qr, lastDisconnect } = update;
 
@@ -612,6 +613,10 @@ async function connectBot() {
       console.log("\n=== SCAN QR WHATSAPP ===");
       QRCode.generate(qr, { small: true });
       console.log("Scan QR di WhatsApp > Perangkat Tertaut\n");
+    }
+
+    if (!sock.authState.creds.registered && USE_PAIRING_CODE && !pairingRequested) {
+      await maybeRequestPairingCode();
     }
 
     if (connection === "open") {
