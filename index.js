@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const pino = require("pino");
 const QRCode = require("qrcode-terminal");
+const { exec } = require("child_process");
 
 const {
   default: makeWASocket,
@@ -21,12 +22,16 @@ const MEDIA_DIR = process.env.MEDIA_DIR || "./media";
 const BACKUP_DIR = process.env.BACKUP_DIR || "./backups";
 const LOG_DIR = process.env.LOG_DIR || "./logs";
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
+
 const COMMAND_PREFIX = process.env.COMMAND_PREFIX || ".";
 const TIMEZONE = process.env.TIMEZONE || "Asia/Jakarta";
 const TZ_LABEL = process.env.TZ_LABEL || "WIB";
+
 const BACKUP_INTERVAL_MINUTES = Number(process.env.BACKUP_INTERVAL_MINUTES || 30);
 const MAX_BACKUP_FILES = Number(process.env.MAX_BACKUP_FILES || 20);
-const USE_PAIRING_CODE = String(process.env.USE_PAIRING_CODE || "true").toLowerCase() === "true";
+
+const USE_PAIRING_CODE =
+  String(process.env.USE_PAIRING_CODE || "true").toLowerCase() === "true";
 const PAIRING_NUMBER = (process.env.PAIRING_NUMBER || "").replace(/\D/g, "");
 
 let sock = null;
@@ -184,6 +189,26 @@ function restartBot() {
   }, 2000);
 }
 
+function updateBot() {
+  writeLog("update_bot", { action: "git_pull_npm_install" });
+  console.log("Updating bot...");
+
+  exec("git pull && npm install", { cwd: process.cwd() }, (err, stdout, stderr) => {
+    if (stdout) console.log(stdout);
+    if (stderr) console.log(stderr);
+
+    if (err) {
+      writeLog("update_error", { error: err.message });
+      return;
+    }
+
+    writeLog("update_success", {});
+    setTimeout(() => {
+      process.exit(1);
+    }, 3000);
+  });
+}
+
 async function reply(remoteJid, text, quoted) {
   return sock.sendMessage(remoteJid, { text }, { quoted });
 }
@@ -203,7 +228,7 @@ async function sendSlot(timeKey, trigger = "manual") {
 
     await sock.sendMessage(config.targetGroupJid, {
       image: { url: photo.path },
-      caption: i === 0 ? (slot.text || "") : ""
+      caption: i === 0 ? slot.text || "" : ""
     });
 
     sentPhoto++;
@@ -284,6 +309,33 @@ function getLastLogLines(limit = 15) {
   return lines.slice(-limit).join("\n") || "Belum ada log hari ini.";
 }
 
+async function maybeRequestPairingCode() {
+  try {
+    if (!USE_PAIRING_CODE) return;
+    if (!PAIRING_NUMBER) {
+      console.log("USE_PAIRING_CODE aktif tapi PAIRING_NUMBER belum diisi.");
+      return;
+    }
+    if (pairingRequested) return;
+    if (sock?.authState?.creds?.registered) return;
+
+    pairingRequested = true;
+    const code = await sock.requestPairingCode(PAIRING_NUMBER);
+
+    console.log("\n=== KODE TAUTAN WHATSAPP ===");
+    console.log(code);
+    console.log(`Masukkan kode ini di WhatsApp untuk nomor ${PAIRING_NUMBER}\n`);
+
+    writeLog("pairing_code_requested", {
+      pairingNumber: PAIRING_NUMBER
+    });
+  } catch (err) {
+    pairingRequested = false;
+    console.error("Gagal membuat pairing code:", err.message);
+    writeLog("pairing_code_error", { error: err.message });
+  }
+}
+
 async function handleCommand(message) {
   const text = getMessageText(message);
   if (!text.startsWith(COMMAND_PREFIX)) return;
@@ -300,6 +352,7 @@ async function handleCommand(message) {
         [
           "📌 *Menu Bot VPS*",
           ".setgrup <groupJid>",
+          ".groups",
           ".setjadwal <HH:MM>",
           ".setpesan <HH:MM> <teks>",
           "kirim foto dengan caption: .savefoto <HH:MM>",
@@ -312,7 +365,8 @@ async function handleCommand(message) {
           ".status",
           ".backup",
           ".log",
-          ".restart"
+          ".restart",
+          ".update"
         ].join("\n"),
         message
       );
@@ -340,6 +394,26 @@ async function handleCommand(message) {
       return;
     }
 
+    if (cmd === "groups") {
+      const groups = await sock.groupFetchAllParticipating();
+      const items = Object.values(groups);
+
+      if (!items.length) {
+        await reply(remoteJid, "Belum ada grup yang terdeteksi.", message);
+        return;
+      }
+
+      const lines = ["📋 *Daftar Grup & ID*", ""];
+      for (const g of items) {
+        lines.push(`*${g.subject || "Tanpa Nama"}*`);
+        lines.push(`${g.id}`);
+        lines.push("");
+      }
+
+      await reply(remoteJid, lines.join("\n").trim(), message);
+      return;
+    }
+
     if (cmd === "backup") {
       const backupPath = backupSession("manual");
       await reply(remoteJid, `✅ Backup session dibuat:\n${backupPath}`, message);
@@ -354,6 +428,12 @@ async function handleCommand(message) {
     if (cmd === "restart") {
       await reply(remoteJid, "♻️ Bot akan restart...", message);
       restartBot();
+      return;
+    }
+
+    if (cmd === "update") {
+      await reply(remoteJid, "🔄 Bot akan update dari GitHub...", message);
+      updateBot();
       return;
     }
 
@@ -413,7 +493,11 @@ async function handleCommand(message) {
       }
 
       const total = await saveIncomingImageToSlot(message, timeKey);
-      await reply(remoteJid, `✅ Foto disimpan ke slot ${timeKey}\nTotal foto: ${total}`, message);
+      await reply(
+        remoteJid,
+        `✅ Foto disimpan ke slot ${timeKey}\nTotal foto: ${total}`,
+        message
+      );
       return;
     }
 
@@ -436,7 +520,9 @@ async function handleCommand(message) {
       for (const timeKey of entries) {
         const slot = config.slots[timeKey];
         lines.push(
-          `${timeKey} | teks: ${slot.text ? "ada" : "kosong"} | foto: ${(slot.photos || []).length}`
+          `${timeKey} | teks: ${slot.text ? "ada" : "kosong"} | foto: ${
+            (slot.photos || []).length
+          }`
         );
       }
 
@@ -456,14 +542,22 @@ async function handleCommand(message) {
       config.slots = {};
       config.enabled = false;
       saveConfig(config);
-      await reply(remoteJid, "✅ Semua jadwal dihapus dan scheduler dimatikan.", message);
+      await reply(
+        remoteJid,
+        "✅ Semua jadwal dihapus dan scheduler dimatikan.",
+        message
+      );
       return;
     }
 
     if (cmd === "onjadwal") {
       config.enabled = true;
       saveConfig(config);
-      await reply(remoteJid, `✅ Scheduler ON\nTimezone aktif: ${TIMEZONE} (${TZ_LABEL})`, message);
+      await reply(
+        remoteJid,
+        `✅ Scheduler ON\nTimezone aktif: ${TIMEZONE} (${TZ_LABEL})`,
+        message
+      );
       return;
     }
 
@@ -489,29 +583,6 @@ async function handleCommand(message) {
     console.error("[COMMAND ERROR]", err);
     writeLog("command_error", { command: cmd, error: err.message });
     await reply(remoteJid, `❌ Error: ${err.message}`, message);
-  }
-}
-
-async function maybeRequestPairingCode() {
-  try {
-    if (!USE_PAIRING_CODE) return;
-    if (!PAIRING_NUMBER) {
-      console.log("USE_PAIRING_CODE aktif tapi PAIRING_NUMBER belum diisi.");
-      return;
-    }
-    if (pairingRequested) return;
-    if (sock?.authState?.creds?.registered) return;
-
-    pairingRequested = true;
-    const code = await sock.requestPairingCode(PAIRING_NUMBER);
-    console.log("\n=== KODE TAUTAN WHATSAPP ===");
-    console.log(code);
-    console.log(`Masukkan kode ini di WhatsApp untuk nomor ${PAIRING_NUMBER}\n`);
-    writeLog("pairing_code_requested", { pairingNumber: PAIRING_NUMBER, code });
-  } catch (err) {
-    pairingRequested = false;
-    console.error("Gagal membuat pairing code:", err.message);
-    writeLog("pairing_code_error", { error: err.message });
   }
 }
 
@@ -547,10 +618,12 @@ async function connectBot() {
       isReady = true;
       reconnecting = false;
       pairingRequested = false;
+
       writeLog("connection_open", {
         timezone: TIMEZONE,
         atTime: `${todayDate()} ${nowSeconds()} ${TZ_LABEL}`
       });
+
       console.log(`READY | ${todayDate()} ${nowSeconds()} ${TZ_LABEL} | ${TIMEZONE}`);
     }
 
